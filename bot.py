@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
@@ -13,7 +14,17 @@ from telegram.ext import (
 )
 
 from ai_service import AIService
-from config import MAX_HISTORY, MAX_IMAGE_BYTES, MAX_MESSAGE_LENGTH, TELEGRAM_BOT_TOKEN
+from config import (
+    AI_MIN_REQUEST_INTERVAL,
+    AI_PROVIDER,
+    MAX_HISTORY,
+    MAX_IMAGE_BYTES,
+    MAX_MESSAGE_LENGTH,
+    REQUEST_TIMEOUT,
+    TELEGRAM_BOT_TOKEN,
+)
+from network import build_telegram_request, resolve_telegram_proxy
+from formatting import format_for_telegram
 from i18n import modes, t
 
 logging.basicConfig(
@@ -166,11 +177,86 @@ async def send_ai_reply(
     reply: str,
     user_history_text: str,
 ) -> None:
-    lang = get_lang(context)
     append_history(context, "user", user_history_text)
     append_history(context, "assistant", reply)
-    for part in split_message(reply):
-        await update.message.reply_text(part)
+    formatted = format_for_telegram(reply)
+    for part in split_message(formatted):
+        try:
+            await update.message.reply_text(part, parse_mode=ParseMode.HTML)
+        except Exception:
+            await update.message.reply_text(part)
+
+
+async def reply_ai_error(update: Update, lang: str, exc: Exception) -> None:
+    error_text = str(exc)
+    if "402" in error_text or "Insufficient Balance" in error_text:
+        await update.message.reply_text(
+            t(lang, "ai_payment_required"),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    if "404" in error_text or "No endpoints found" in error_text:
+        await update.message.reply_text(
+            t(lang, "ai_not_found"),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    if "429" in error_text or "rate limit" in error_text.lower():
+        await update.message.reply_text(
+            t(lang, "ai_rate_limit"),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    await update.message.reply_text(
+        t(lang, "ai_error", error=error_text),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+def get_user_lock(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> asyncio.Lock:
+    locks: dict[int, asyncio.Lock] = context.application.bot_data.setdefault("user_locks", {})
+    if user_id not in locks:
+        locks[user_id] = asyncio.Lock()
+    return locks[user_id]
+
+
+def is_duplicate_message(context: ContextTypes.DEFAULT_TYPE, message_id: int) -> bool:
+    last_id = context.user_data.get("last_processed_msg_id")
+    if last_id == message_id:
+        return True
+    context.user_data["last_processed_msg_id"] = message_id
+    return False
+
+
+async def wait_cooldown(context: ContextTypes.DEFAULT_TYPE, lang: str, update: Update) -> bool:
+    last_at = context.user_data.get("last_request_at", 0.0)
+    elapsed = time.monotonic() - last_at
+    if elapsed < AI_MIN_REQUEST_INTERVAL:
+        wait_sec = int(AI_MIN_REQUEST_INTERVAL - elapsed) + 1
+        await update.message.reply_text(t(lang, "please_wait", seconds=wait_sec))
+        return False
+    context.user_data["last_request_at"] = time.monotonic()
+    return True
+
+
+async def process_with_lock(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    handler,
+    *args,
+) -> None:
+    user_id = update.effective_user.id
+    lang = get_lang(context)
+    lock = get_user_lock(context, user_id)
+
+    if lock.locked():
+        await update.message.reply_text(t(lang, "busy"))
+        return
+
+    async with lock:
+        if not await wait_cooldown(context, lang, update):
+            return
+        await handler(update, context, *args)
 
 
 async def ask_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
@@ -185,10 +271,7 @@ async def ask_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) 
         reply = await asyncio.to_thread(ai.chat, text, get_history(context), mode, lang)
     except Exception as exc:
         logger.exception("AI request failed")
-        await update.message.reply_text(
-            t(lang, "ai_error", error=exc),
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        await reply_ai_error(update, lang, exc)
         return
 
     await send_ai_reply(update, context, reply, text)
@@ -224,10 +307,7 @@ async def ask_ai_with_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
     except Exception as exc:
         logger.exception("Vision AI request failed")
-        await update.message.reply_text(
-            t(lang, "ai_error", error=exc),
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        await reply_ai_error(update, lang, exc)
         return
 
     suffix = f": {caption.strip()}" if caption.strip() else ""
@@ -241,11 +321,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not text or not text.strip():
         await update.message.reply_text(t(lang, "send_text"))
         return
-    await ask_ai(update, context, text.strip())
+    if is_duplicate_message(context, update.message.message_id):
+        return
+    await process_with_lock(update, context, ask_ai, text.strip())
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await ask_ai_with_photo(update, context)
+    if is_duplicate_message(context, update.message.message_id):
+        return
+    await process_with_lock(update, context, ask_ai_with_photo)
 
 
 def main() -> None:
@@ -253,8 +337,22 @@ def main() -> None:
         raise ValueError("TELEGRAM_BOT_TOKEN not set. Create a .env file.")
 
     ai = AIService()
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    telegram_proxy = resolve_telegram_proxy()
+    request = build_telegram_request(REQUEST_TIMEOUT, telegram_proxy)
+
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .request(request)
+        .get_updates_request(request)
+        .build()
+    )
     app.bot_data["ai"] = ai
+    if telegram_proxy:
+        logger.info("Telegram route: proxy %s", telegram_proxy)
+    else:
+        logger.info("Telegram route: direct (trust_env=False)")
+    logger.info("AI provider: %s", AI_PROVIDER)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
@@ -267,7 +365,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("SmartSolve bot started")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":

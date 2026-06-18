@@ -41,9 +41,28 @@ TEXTS: dict[str, dict[str, Any]] = {
         "send_text_or_photo": "Отправь текст или фото с задачей.",
         "processing_photo": "📷 Распознаю фото…",
         "photo_too_large": "❌ Фото слишком большое. Отправь более чёткий снимок или уменьши размер.",
+        "busy": "⏳ Уже обрабатываю предыдущий запрос. Подожди немного.",
+        "please_wait": "⏳ Подожди {seconds} сек. перед следующим запросом.",
         "ai_error": (
             "❌ Ошибка при обращении к нейросети:\n`{error}`\n\n"
-            "Проверь GROQ_API_KEY или попробуй позже."
+            "Проверь API-ключ или попробуй позже."
+        ),
+        "ai_rate_limit": (
+            "⏳ **Слишком много запросов** (лимит бесплатной модели).\n\n"
+            "Подожди 1–2 минуты и попробуй снова.\n"
+            "Или установи **Ollama** — бесплатно и без лимитов."
+        ),
+        "ai_not_found": (
+            "❌ **Модель не найдена** (HTTP 404).\n\n"
+            "Обнови модель в `.env`:\n"
+            "`OPENROUTER_MODEL=openai/gpt-oss-20b:free`"
+        ),
+        "ai_payment_required": (
+            "💳 **Закончился баланс** на DeepSeek/OpenRouter.\n\n"
+            "Варианты:\n"
+            "1. В `.env` поставь `AI_PROVIDER=openrouter` (бесплатные модели)\n"
+            "2. Установи **Ollama** — [ollama.com](https://ollama.com) → `AI_PROVIDER=ollama`\n"
+            "3. Пополни баланс DeepSeek на platform.deepseek.com"
         ),
         "photo_history": "[Фото{suffix}]",
     },
@@ -87,9 +106,28 @@ TEXTS: dict[str, dict[str, Any]] = {
         "send_text_or_photo": "Send text or a photo of the problem.",
         "processing_photo": "📷 Reading the photo…",
         "photo_too_large": "❌ Photo is too large. Send a clearer shot or a smaller image.",
+        "busy": "⏳ Already processing your previous request. Please wait.",
+        "please_wait": "⏳ Wait {seconds}s before sending another request.",
         "ai_error": (
             "❌ AI request failed:\n`{error}`\n\n"
-            "Check GROQ_API_KEY or try again later."
+            "Check your API key or try again later."
+        ),
+        "ai_rate_limit": (
+            "⏳ **Too many requests** (free model rate limit).\n\n"
+            "Wait 1–2 minutes and try again.\n"
+            "Or install **Ollama** — free with no limits."
+        ),
+        "ai_not_found": (
+            "❌ **Model not found** (HTTP 404).\n\n"
+            "Update model in `.env`:\n"
+            "`OPENROUTER_MODEL=openai/gpt-oss-20b:free`"
+        ),
+        "ai_payment_required": (
+            "💳 **Balance exhausted** on DeepSeek/OpenRouter.\n\n"
+            "Options:\n"
+            "1. Set `AI_PROVIDER=openrouter` in `.env` (free models)\n"
+            "2. Install **Ollama** — [ollama.com](https://ollama.com) → `AI_PROVIDER=ollama`\n"
+            "3. Top up DeepSeek at platform.deepseek.com"
         ),
         "photo_history": "[Photo{suffix}]",
     },
