@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
@@ -34,6 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGS = ("ru", "en")
+LANG_REPLY_BUTTONS = {"🇷🇺 Русский": "ru", "🇬🇧 English": "en"}
 
 
 def get_lang(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -49,11 +50,37 @@ def get_mode(context: ContextTypes.DEFAULT_TYPE) -> str:
     return context.user_data.get("mode", "general")
 
 
-def append_history(context: ContextTypes.DEFAULT_TYPE, role: str, content: str) -> None:
-    history = get_history(context)
-    history.append({"role": role, "content": content})
-    if len(history) > MAX_HISTORY * 2:
-        del history[:2]
+def reset_session(context: ContextTypes.DEFAULT_TYPE, *, keep_lang: bool = True) -> None:
+    saved_lang = context.user_data.get("lang") if keep_lang else None
+    context.user_data.clear()
+    if saved_lang in SUPPORTED_LANGS:
+        context.user_data["lang"] = saved_lang
+
+
+def lang_label(code: str) -> str:
+    return t("ru", "lang_names")[code]
+
+
+def language_inline_keyboard(current: str | None = None) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    f"{'✅ ' if code == current else ''}{lang_label(code)}",
+                    callback_data=f"lang:{code}",
+                )
+                for code in SUPPORTED_LANGS
+            ]
+        ]
+    )
+
+
+def reply_language_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(text) for text in LANG_REPLY_BUTTONS]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def main_keyboard(lang: str, current_mode: str, current_lang: str) -> InlineKeyboardMarkup:
@@ -66,12 +93,19 @@ def main_keyboard(lang: str, current_mode: str, current_lang: str) -> InlineKeyb
     ]
     lang_buttons = [
         InlineKeyboardButton(
-            f"{'✅ ' if code == current_lang else ''}{t(lang, 'lang_names')[code]}",
+            f"{'✅ ' if code == current_lang else ''}{lang_label(code)}",
             callback_data=f"lang:{code}",
         )
         for code in SUPPORTED_LANGS
     ]
     return InlineKeyboardMarkup([mode_buttons, lang_buttons])
+
+
+def append_history(context: ContextTypes.DEFAULT_TYPE, role: str, content: str) -> None:
+    history = get_history(context)
+    history.append({"role": role, "content": content})
+    if len(history) > MAX_HISTORY * 2:
+        del history[:2]
 
 
 def split_message(text: str, limit: int = MAX_MESSAGE_LENGTH) -> list[str]:
@@ -91,19 +125,39 @@ def split_message(text: str, limit: int = MAX_MESSAGE_LENGTH) -> list[str]:
     return parts
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data.clear()
+async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_lang(context)
     await update.message.reply_text(
         t(lang, "start"),
         parse_mode=ParseMode.MARKDOWN,
+        reply_markup=reply_language_keyboard(),
+    )
+    await update.message.reply_text(
+        t(lang, "keyboard_lang"),
         reply_markup=main_keyboard(lang, get_mode(context), lang),
     )
 
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reset_session(context, keep_lang=True)
+    if "lang" not in context.user_data:
+        context.user_data["awaiting_lang"] = True
+        await update.message.reply_text(
+            t("ru", "choose_lang"),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=language_inline_keyboard(),
+        )
+        return
+    await send_welcome(update, context)
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_lang(context)
-    await update.message.reply_text(t(lang, "help"), parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(
+        t(lang, "help"),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=reply_language_keyboard(),
+    )
 
 
 async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -114,21 +168,28 @@ async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_keyboard(lang, mode, lang),
     )
+    await update.message.reply_text(
+        t(lang, "keyboard_lang"),
+        reply_markup=reply_language_keyboard(),
+    )
 
 
 async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_lang(context)
     await update.message.reply_text(
-        t(lang, "lang_current", lang=t(lang, "lang_names")[lang]),
+        t(lang, "lang_current", lang=lang_label(lang)),
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=main_keyboard(lang, get_mode(context), lang),
+        reply_markup=language_inline_keyboard(lang),
     )
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_lang(context)
-    context.user_data["history"] = []
-    await update.message.reply_text(t(lang, "clear_done"))
+    reset_session(context, keep_lang=True)
+    await update.message.reply_text(
+        t(lang, "clear_done"),
+        reply_markup=reply_language_keyboard(),
+    )
 
 
 async def mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -144,18 +205,56 @@ async def mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
+async def apply_language(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    new_lang: str,
+    *,
+    via_callback: bool = False,
+) -> None:
+    if new_lang not in SUPPORTED_LANGS:
+        return
+
+    context.user_data["lang"] = new_lang
+    first_setup = context.user_data.pop("awaiting_lang", False)
+    mode = get_mode(context)
+    inline_markup = main_keyboard(new_lang, mode, new_lang)
+
+    if first_setup:
+        text = t(new_lang, "start")
+    else:
+        text = t(new_lang, "lang_selected", lang=lang_label(new_lang))
+
+    if via_callback:
+        query = update.callback_query
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=inline_markup,
+        )
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=t(new_lang, "keyboard_lang"),
+            reply_markup=reply_language_keyboard(),
+        )
+        return
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=reply_language_keyboard(),
+    )
+    await update.message.reply_text(
+        t(new_lang, "keyboard_lang"),
+        reply_markup=inline_markup,
+    )
+
+
 async def lang_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     new_lang = query.data.split(":", 1)[1]
-    if new_lang not in SUPPORTED_LANGS:
-        return
-    context.user_data["lang"] = new_lang
-    await query.edit_message_text(
-        t(new_lang, "lang_selected", lang=t(new_lang, "lang_names")[new_lang]),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=main_keyboard(new_lang, get_mode(context), new_lang),
-    )
+    await apply_language(update, context, new_lang, via_callback=True)
 
 
 async def download_photo_bytes(
@@ -321,9 +420,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not text or not text.strip():
         await update.message.reply_text(t(lang, "send_text"))
         return
+
+    stripped = text.strip()
+    if stripped in LANG_REPLY_BUTTONS:
+        await apply_language(update, context, LANG_REPLY_BUTTONS[stripped])
+        return
+
+    if "lang" not in context.user_data:
+        context.user_data["awaiting_lang"] = True
+        await update.message.reply_text(
+            t("ru", "choose_lang"),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=language_inline_keyboard(),
+        )
+        return
+
     if is_duplicate_message(context, update.message.message_id):
         return
-    await process_with_lock(update, context, ask_ai, text.strip())
+    await process_with_lock(update, context, ask_ai, stripped)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

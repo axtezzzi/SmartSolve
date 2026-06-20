@@ -36,6 +36,11 @@ TEXTS: dict[str, dict[str, Any]] = {
         "lang_current": "Текущий язык: **{lang}**",
         "lang_selected": "Язык: **{lang}**\n\nИнтерфейс и ответы будут на этом языке.",
         "lang_names": {"ru": "🇷🇺 Русский", "en": "🇬🇧 English"},
+        "choose_lang": (
+            "🌐 **Выберите язык / Choose language**\n\n"
+            "Нажмите кнопку ниже — интерфейс и ответы бота будут на выбранном языке."
+        ),
+        "keyboard_lang": "🌐 Язык",
         "clear_done": "🗑 История диалога очищена.",
         "send_text": "Отправь текст задачи или вопрос.",
         "send_text_or_photo": "Отправь текст или фото с задачей.",
@@ -101,6 +106,11 @@ TEXTS: dict[str, dict[str, Any]] = {
         "lang_current": "Current language: **{lang}**",
         "lang_selected": "Language: **{lang}**\n\nUI and replies will use this language.",
         "lang_names": {"ru": "🇷🇺 Русский", "en": "🇬🇧 English"},
+        "choose_lang": (
+            "🌐 **Choose language / Выберите язык**\n\n"
+            "Tap a button below — the bot UI and replies will use that language."
+        ),
+        "keyboard_lang": "🌐 Language",
         "clear_done": "🗑 Chat history cleared.",
         "send_text": "Send a problem or question as text.",
         "send_text_or_photo": "Send text or a photo of the problem.",
